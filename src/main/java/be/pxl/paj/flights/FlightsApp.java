@@ -156,7 +156,9 @@ public class FlightsApp {
 
 		// Sort the itineraries and truncate to 99 results.
 		Collections.sort(itineraries);
-		itineraries = itineraries.subList(0, 99);
+		if (itineraries.size()>100) {
+			itineraries = itineraries.subList(0, 99);
+		}
 
 		showItineraries();
 	}
