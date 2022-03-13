@@ -29,6 +29,12 @@ public class FlightsDB {
 	private PreparedStatement queryLoginCustomer;
 	private PreparedStatement queryFlights;
 	private PreparedStatement queryFlightsWithHops;
+	private PreparedStatement insertReservation;
+	private PreparedStatement countUserReservationsOnDay;
+	private PreparedStatement countReservationsForFlight;
+	private PreparedStatement queryFlightsForUser;
+	private PreparedStatement deleteReservation;
+
 
 	/**
 	 * Opens a connection to the database using the given settings.
@@ -55,7 +61,9 @@ public class FlightsDB {
 	 */
 	public void init() throws SQLException {
 		// TODO: create prepared statements here
-		queryLoginCustomer = conn.prepareStatement("SELECT uid, name, handle FROM CUSTOMER WHERE handle=? AND password=?");
+		queryLoginCustomer = conn.prepareStatement(
+				"SELECT uid, name, handle FROM CUSTOMER WHERE handle=? AND password=?"
+		);
 		queryFlights = conn.prepareStatement(
 				"SELECT fid, name, flight_num, origin_city, dest_city, actual_time " +
 						"FROM FLIGHTS F1, CARRIERS " +
@@ -63,7 +71,7 @@ public class FlightsDB {
 						"    year = ? AND month_id = ? AND day_of_month = ? AND " +
 						"    origin_city = ? AND dest_city = ? " +
 						"ORDER BY actual_time ASC LIMIT 99"
-				);
+		);
 		queryFlightsWithHops = conn.prepareStatement(
 				"SELECT F1.fid as fid1, C1.name as name1, " +
 						"    F1.flight_num as flight_num1, F1.origin_city as origin_city1, " +
@@ -79,7 +87,38 @@ public class FlightsDB {
 						"    F1.origin_city = ? AND F2.dest_city = ? AND" +
 						"    F1.dest_city = F2.origin_city\n" +
 						"ORDER BY F1.actual_time + F2.actual_time ASC LIMIT 99"
-						);
+		);
+		insertReservation = conn.prepareStatement(
+				"INSERT INTO RESERVATION (uid, fid) VALUES (?, ?)"
+		);
+
+		countUserReservationsOnDay = conn.prepareStatement("""
+						SELECT f.fid num
+						FROM RESERVATION r
+							JOIN FLIGHTS f ON f.fid=r.fid
+						WHERE r.uid=? AND f.day_of_month=?
+						""");
+		countReservationsForFlight = conn.prepareStatement("""
+						SELECT fid, COUNT(fid) num
+						FROM RESERVATION r
+						WHERE r.fid = ?
+						GROUP BY fid
+						HAVING COUNT(fid) >= ?
+						""");
+		countReservationsForFlight.setInt(2, MAX_FLIGHT_BOOKINGS);
+
+		queryFlightsForUser = conn.prepareStatement("""
+						SELECT f.fid, f.YEAR, f.month_id, f.day_of_month, c.name, f.flight_num, f.origin_city, f.dest_city, f.actual_time
+						FROM RESERVATION r
+							JOIN FLIGHTS f ON f.fid=r.fid
+							JOIN CARRIERS c ON f.carrier_id=c.cid
+						WHERE r.uid=?
+						""");
+
+		deleteReservation = conn.prepareStatement("""
+						DELETE FROM RESERVATION
+						WHERE uid = ? AND fid = ?
+						""");
 	}
 
 	/**
@@ -164,8 +203,35 @@ public class FlightsDB {
 	 * Returns the list of all flights reserved by the given user.
 	 */
 	public List<Flight> getReservations(User user) throws SQLException {
-		// TODO: implement this properly
-		return new ArrayList<>();
+
+		List<Flight> results = new ArrayList<>();
+
+		queryFlightsForUser.setInt(1, user.getId());
+
+		ResultSet rawResults = queryFlightsForUser.executeQuery();
+		while (rawResults.next()) {
+			LocalDate date = LocalDate.of(
+					rawResults.getInt("YEAR"),
+					rawResults.getInt("month_id"),
+					rawResults.getInt("day_of_month")
+					);
+
+			results.add(
+					new Flight(
+							rawResults.getInt("fid"),
+							date,
+							rawResults.getString("name"),
+							rawResults.getString("origin_city"),
+							rawResults.getString("flight_num"),
+							rawResults.getString("dest_city"),
+							(int) rawResults.getFloat("actual_time")
+					)
+			);
+		}
+
+		rawResults.close();
+
+		return results;
 	}
 
 	/**
@@ -194,9 +260,43 @@ public class FlightsDB {
 	public int addReservations(User user, LocalDate date, List<Flight> flights)
 			throws SQLException {
 
-		// TODO: implement this in a transaction
+		conn.setAutoCommit(false);
 
-		return RESERVATION_FLIGHT_FULL;
+		// Check for free places
+		for (var flight :
+				flights) {
+			countReservationsForFlight.setInt(1, flight.getId());
+			try (ResultSet results = countReservationsForFlight.executeQuery()) {
+				if (results.next()) {
+					return RESERVATION_FLIGHT_FULL;
+				}
+			}
+		}
+
+
+
+		// Check if user has already reservations
+
+		countUserReservationsOnDay.setInt(1, user.getId());
+		countUserReservationsOnDay.setInt(2, flights.get(0).getDate().getDayOfMonth());
+
+		try (ResultSet results = countUserReservationsOnDay.executeQuery()) {
+			if (results.next()) {
+					return RESERVATION_DAY_FULL;
+			}
+		}
+
+		for (var flight :
+				flights) {
+			insertReservation.setInt(1, user.getId());
+			insertReservation.setInt(2, flight.getId());
+			insertReservation.executeUpdate();
+		}
+
+		conn.commit();
+		conn.setAutoCommit(true);
+
+		return RESERVATION_ADDED;
 	}
 
 	/**
@@ -205,7 +305,16 @@ public class FlightsDB {
 	public void removeReservations(User user, List<Flight> flights)
 			throws SQLException {
 
-		// TODO: implement this in a transaction
+		conn.setAutoCommit(false);
+		deleteReservation.setInt(1, user.getId());
 
+		for (var flight :
+				flights) {
+			deleteReservation.setInt(2, flight.getId());
+			deleteReservation.execute();
+		}
+
+		conn.commit();
+		conn.setAutoCommit(true);
 	}
 }
